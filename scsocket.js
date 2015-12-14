@@ -290,7 +290,7 @@ SCSocket.prototype.getAuthToken = function () {
   return this.authToken;
 };
 
-SCSocket.prototype.removeAuthToken = function (callback) {
+SCSocket.prototype.deauthenticate = function (callback) {
   this.authToken = null;
   this.emit('#removeAuthToken', null, callback);
 };

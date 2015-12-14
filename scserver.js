@@ -188,6 +188,10 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
     self.auth.verifyToken(signedAuthToken, self.verificationKey, self.defaultVerificationOptions, function (err, authToken) {
       scSocket.authToken = authToken || null;
 
+      if (err && err.name == 'TokenExpiredError') {
+        scSocket.deauthenticate();
+      }
+
       var authError = self._processTokenError(scSocket, err, signedAuthToken);
 
       var authStatus = {
@@ -200,10 +204,16 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
     });
   });
 
+  scSocket.on('#removeAuthToken', function () {
+    // TODO: Emit deauthenticate event if socket was authenticated
+    scSocket.authToken = null;
+  });
+
   scSocket.once('_disconnect', function () {
     clearTimeout(scSocket._handshakeTimeout);
     scSocket.off('#handshake');
     scSocket.off('#authenticate');
+    scSocket.off('#removeAuthToken');
   });
 
   scSocket._handshakeTimeout = setTimeout(this._handleHandshakeTimeout.bind(this, scSocket), this.ackTimeout);
@@ -217,6 +227,10 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
 
     self.auth.verifyToken(signedAuthToken, self.verificationKey, self.defaultVerificationOptions, function (err, authToken) {
       scSocket.authToken = authToken || null;
+
+      if (err && err.name == 'TokenExpiredError') {
+        scSocket.deauthenticate();
+      }
 
       var authError;
 
@@ -376,16 +390,52 @@ SCServer.prototype._isPrivateTransmittedEvent = function (event) {
 };
 
 SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
+  var request = {
+    socket: socket,
+    event: event,
+    data: data
+  };
+
+  var token = socket.getAuthToken();
+  if (this._isAuthTokenExpired(token)) {
+    // TODO: create new errors.js file and define custom error subclass
+    request.authTokenExpiredError = new Error('The socket auth token has expired');
+    request.authTokenExpiredError.name = 'AuthTokenExpiredError';
+    request.authTokenExpiredError.expiry = token.exp;
+
+    socket.deauthenticate();
+  }
+
+  this._passThroughMiddleware(request, cb);
+};
+
+SCServer.prototype._isAuthTokenExpired = function (token) {
+  if (token && token.exp != null) {
+    var currentTime = Date.now();
+    var expiryMilliseconds = token.exp * 1000;
+    return currentTime > expiryMilliseconds;
+  }
+  return false;
+};
+
+SCServer.prototype._passThroughMiddleware = function (options, cb) {
   var self = this;
 
   var callbackInvoked = false;
 
-  var request = {};
+  var request = {
+    socket: options.socket
+  };
+
+  if (options.authTokenExpiredError != null) {
+    request.authTokenExpiredError = options.authTokenExpiredError;
+  }
+
+  var event = options.event;
 
   if (this._isPrivateTransmittedEvent(event)) {
     if (event == this._subscribeEvent) {
-      request.socket = socket;
-      request.channel = data;
+      request.channel = options.data;
 
       async.applyEachSeries(this._middleware[this.MIDDLEWARE_SUBSCRIBE], request,
         function (err) {
@@ -406,9 +456,8 @@ SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
       );
     } else if (event == this._publishEvent) {
       if (this.allowClientPublish) {
-        request.socket = socket;
-        request.channel = data.channel;
-        request.data = data.data;
+        request.channel = options.data.channel;
+        request.data = options.data.data;
 
         async.applyEachSeries(this._middleware[this.MIDDLEWARE_PUBLISH_IN], request,
           function (err) {
@@ -424,7 +473,7 @@ SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
                 }
                 cb(err);
               } else {
-                self.exchange.publish(data.channel, data.data, function (err) {
+                self.exchange.publish(request.channel, request.data, function (err) {
                   cb(err);
                 });
               }
@@ -439,9 +488,8 @@ SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
       cb();
     }
   } else {
-    request.socket = socket;
     request.event = event;
-    request.data = data;
+    request.data = options.data;
 
     async.applyEachSeries(this._middleware[this.MIDDLEWARE_EMIT], request,
       function (err) {

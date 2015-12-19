@@ -11,6 +11,10 @@ var crypto = require('crypto');
 var uuid = require('node-uuid');
 var scSimpleBroker = require('sc-simple-broker');
 
+var scErrors = require('sc-errors');
+var AuthTokenExpiredError = scErrors.AuthTokenExpiredError;
+var SilentMiddlewareBlockedError = scErrors.SilentMiddlewareBlockedError;
+
 
 var SCServer = function (options) {
   var self = this;
@@ -25,7 +29,7 @@ var SCServer = function (options) {
     appName: uuid.v4(),
     path: '/socketcluster/',
     authDefaultExpiry: 86400,
-    middlewareEmitNotices: true
+    middlewareEmitWarnings: true
   };
 
   for (var i in options) {
@@ -46,6 +50,7 @@ var SCServer = function (options) {
   this._subscribeEvent = '#subscribe';
   this._publishEvent = '#publish';
 
+  // TODO: This needs to be a custom Error object with a name property
   this.ERROR_NO_PUBLISH = 'Error: Client publish feature is disabled';
 
   this._middleware = {};
@@ -67,13 +72,15 @@ var SCServer = function (options) {
 
   this._brokerEngine = opts.brokerEngine;
   this.appName = opts.appName || '';
-  this.middlewareEmitNotices = opts.middlewareEmitNotices;
+  this.middlewareEmitWarnings = opts.middlewareEmitWarnings;
   this._path = opts.path;
 
   if (opts.authPrivateKey != null || opts.authPublicKey != null) {
     if (opts.authPrivateKey == null) {
+      // TODO: This needs to be a custom Error object with a name property
       throw new Error('The authPrivateKey option must be specified if authPublicKey is specified');
     } else if (opts.authPublicKey == null) {
+      // TODO: This needs to be a custom Error object with a name property
       throw new Error('The authPublicKey option must be specified if authPrivateKey is specified');
     }
     this.signatureKey = opts.authPrivateKey;
@@ -132,17 +139,20 @@ SCServer.prototype._handleServerError = function (error) {
 
 SCServer.prototype._handleSocketError = function (error) {
   // We don't want to crash the entire worker on socket error
-  // so we emit it as a notice instead.
+  // so we emit it as a warning instead.
   var errorPrefix = 'Socket Error: ';
   if (error.message) {
     error.message = errorPrefix + error.message;
   } else if (typeof error == 'string') {
     error = errorPrefix + error;
   }
-  this.emit('notice', error);
+  this.emit('warning', error);
 };
 
 SCServer.prototype._handleHandshakeTimeout = function (scSocket) {
+  // TODO: This needs to be a custom Error object with a name property
+  // TODO: Is this a ServerProtocolError? Maybe it should be a SocketProtocolError with a status code?
+  // Should we disconnect the socket?
   var errorMessage = new Error('Did not receive #handshake from client before timeout');
   scSocket.emit('error', errorMessage);
 };
@@ -154,9 +164,11 @@ SCServer.prototype._processTokenError = function (socket, err, signedAuthToken) 
 
   if (err) {
     err.signedAuthToken = signedAuthToken;
+    // TODO: Maybe this should be emitted as an 'error' event with a custom Error type instead?
     socket.emit('badAuthToken', err);
     this.emit('badSocketAuthToken', socket, err);
 
+    // TODO: Maybe this should be a custom Error object with name property?
     authError = {
       name: err.name,
       message: err.message
@@ -199,21 +211,31 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
         authError: authError
       };
 
+      if (authStatus.isAuthenticated) {
+        scSocket.emit('authenticate', authToken);
+      }
+
+      // TODO: Maybe this should be passed back as a custom Error as first argument
+      // We will have to change the frontend to not throw error when it receieves err as first argument
       // Treat authentication failure as a 'soft' error
       respond(null, authStatus);
     });
   });
 
   scSocket.on('#removeAuthToken', function () {
-    // TODO: Emit deauthenticate event if socket was authenticated
+    var oldToken = scSocket.authToken;
     scSocket.authToken = null;
+    scSocket.emit('deauthenticate', oldToken);
   });
 
   scSocket.once('_disconnect', function () {
+    // TODO: Should we emit deauthenticate on disconnect?
     clearTimeout(scSocket._handshakeTimeout);
     scSocket.off('#handshake');
     scSocket.off('#authenticate');
     scSocket.off('#removeAuthToken');
+    scSocket.off('authenticate');
+    scSocket.off('deauthenticate');
   });
 
   scSocket._handshakeTimeout = setTimeout(this._handleHandshakeTimeout.bind(this, scSocket), this.ackTimeout);
@@ -241,13 +263,14 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
       self.clients[id] = scSocket;
       self.clientsCount++;
 
-      self._brokerEngine.bind(scSocket, function (err, sock, isNotice) {
+      self._brokerEngine.bind(scSocket, function (err, sock, isWarning) {
         if (err) {
+          // TODO: This should be an Error object with custom name
           var errorMessage = 'Failed to bind socket to io cluster - ' + err;
           scSocket.emit('#fail', errorMessage);
           scSocket.disconnect();
-          if (isNotice) {
-            self.emit('notice', errorMessage);
+          if (isWarning) {
+            self.emit('warning', errorMessage);
           } else {
             self.emit('error', new Error(errorMessage));
           }
@@ -270,6 +293,10 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
             status.authError = authError;
           }
 
+          if (status.isAuthenticated) {
+            scSocket.emit('authenticate', authToken);
+          }
+
           // Treat authentication failure as a 'soft' error
           respond(null, status);
         }
@@ -281,6 +308,7 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
 
         self._brokerEngine.unbind(scSocket, function (err) {
           if (err) {
+            // TODO: This needs to be a custom Error object with a name property
             self.emit('error', new Error('Failed to unbind socket from io cluster - ' + err));
           } else {
             self.emit('_disconnection', scSocket);
@@ -360,14 +388,15 @@ SCServer.prototype.verifyHandshake = function (info, cb) {
       var callbackInvoked = false;
       async.applyEachSeries(handshakeMiddleware, req, function (err) {
         if (callbackInvoked) {
-          self.emit('notice', new Error('Callback for ' + self.MIDDLEWARE_HANDSHAKE + ' middleware was already invoked'));
+          // TODO: Error object needs to be custom with a name property
+          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_HANDSHAKE + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {
             if (err === true) {
-              err = 'Action was silently blocked by ' + self.MIDDLEWARE_HANDSHAKE + ' middleware';
-            } else if (self.middlewareEmitNotices) {
-              self.emit('notice', err);
+              err = new SilentMiddlewareBlockedError('Action was silently blocked by ' + self.MIDDLEWARE_HANDSHAKE + ' middleware', self.MIDDLEWARE_HANDSHAKE);
+            } else if (self.middlewareEmitWarnings) {
+              self.emit('warning', err);
             }
             cb(false, 401, err);
           } else {
@@ -379,8 +408,9 @@ SCServer.prototype.verifyHandshake = function (info, cb) {
       cb(true);
     }
   } else {
+    // TODO: Needs to be Error object with a name property
     var err = 'Failed to authorize socket handshake - Invalid origin: ' + origin;
-    this.emit('notice', err);
+    this.emit('warning', err);
     cb(false, 403, err);
   }
 };
@@ -398,9 +428,7 @@ SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
 
   var token = socket.getAuthToken();
   if (this._isAuthTokenExpired(token)) {
-    // TODO: create new errors.js file and define custom error subclass
-    request.authTokenExpiredError = new Error('The socket auth token has expired');
-    request.authTokenExpiredError.name = 'AuthTokenExpiredError';
+    request.authTokenExpiredError = new AuthTokenExpiredError('The socket auth token has expired');
     request.authTokenExpiredError.expiry = token.exp;
 
     socket.deauthenticate();
@@ -440,14 +468,15 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
       async.applyEachSeries(this._middleware[this.MIDDLEWARE_SUBSCRIBE], request,
         function (err) {
           if (callbackInvoked) {
-            self.emit('notice', new Error('Callback for ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware was already invoked'));
+            // TODO: Error object needs to be custom with a name property
+            self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware was already invoked'));
           } else {
             callbackInvoked = true;
             if (err) {
               if (err === true) {
-                err = 'Action was silently blocked by ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware';
-              } else if (self.middlewareEmitNotices) {
-                self.emit('notice', err);
+                err = new SilentMiddlewareBlockedError('Action was silently blocked by ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware', self.MIDDLEWARE_SUBSCRIBE);
+              } else if (self.middlewareEmitWarnings) {
+                self.emit('warning', err);
               }
             }
             cb(err);
@@ -462,14 +491,15 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
         async.applyEachSeries(this._middleware[this.MIDDLEWARE_PUBLISH_IN], request,
           function (err) {
             if (callbackInvoked) {
-              self.emit('notice', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware was already invoked'));
+              // TODO: Needs to be a custom Error with a name property
+              self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware was already invoked'));
             } else {
               callbackInvoked = true;
               if (err) {
                 if (err === true) {
-                  err = 'Action was silently blocked by ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware';
-                } else if (self.middlewareEmitNotices) {
-                  self.emit('notice', err);
+                  err =  new SilentMiddlewareBlockedError('Action was silently blocked by ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware', self.MIDDLEWARE_PUBLISH_IN);
+                } else if (self.middlewareEmitWarnings) {
+                  self.emit('warning', err);
                 }
                 cb(err);
               } else {
@@ -494,14 +524,15 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
     async.applyEachSeries(this._middleware[this.MIDDLEWARE_EMIT], request,
       function (err) {
         if (callbackInvoked) {
-          self.emit('notice', new Error('Callback for ' + self.MIDDLEWARE_EMIT + ' middleware was already invoked'));
+          // TODO: Needs to be a custom Error with a name property
+          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_EMIT + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {
             if (err === true) {
-              err = 'Action was silently blocked by ' + self.MIDDLEWARE_EMIT + ' middleware';
-            } else if (self.middlewareEmitNotices) {
-              self.emit('notice', err);
+              err = new SilentMiddlewareBlockedError('Action was silently blocked by ' + self.MIDDLEWARE_EMIT + ' middleware', self.MIDDLEWARE_EMIT);
+            } else if (self.middlewareEmitWarnings) {
+              self.emit('warning', err);
             }
           }
           cb(err);
@@ -525,14 +556,15 @@ SCServer.prototype.verifyOutboundEvent = function (socket, event, data, cb) {
     async.applyEachSeries(this._middleware[this.MIDDLEWARE_PUBLISH_OUT], request,
       function (err) {
         if (callbackInvoked) {
-          self.emit('notice', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware was already invoked'));
+          // TODO: Needs to be a custom Error with a name property
+          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {
             if (err === true) {
-              err = 'Action was silently blocked by ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware';
-            } else if (self.middlewareEmitNotices) {
-              self.emit('notice', err);
+              err = new SilentMiddlewareBlockedError('Action was silently blocked by ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware', self.MIDDLEWARE_PUBLISH_OUT);
+            } else if (self.middlewareEmitWarnings) {
+              self.emit('warning', err);
             }
             cb(err);
           } else {

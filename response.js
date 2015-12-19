@@ -6,6 +6,7 @@ var Response = function (socket, id) {
 
 Response.prototype._respond = function (responseData) {
   if (this.sent) {
+    // TODO: This needs to be a custom Error object with a name property
     throw new Error('Response ' + this.id + ' has already been sent');
   } else {
     this.sent = true;
@@ -28,6 +29,8 @@ Response.prototype.end = function (data) {
 
 Response.prototype.error = function (error, data) {
   if (this.id) {
+    // TODO: This needs to be a custom Error object with a name property, it needs to
+    // capture all properties on the Error object,
     var err;
     if (error instanceof Error) {
       err = {name: error.name, message: error.message, stack: error.stack};

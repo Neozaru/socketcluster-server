@@ -29,18 +29,16 @@ Response.prototype.end = function (data) {
 
 Response.prototype.error = function (error, data) {
   if (this.id) {
+    var err;
     if (error instanceof Error) {
-      if (!error.hasOwnProperty('name')) {
-        error.name = error.name;
-      }
-      if (!error.hasOwnProperty('message')) {
-        error.message = error.message;
-      }
+      err = {name: error.name, message: error.message};
+    } else {
+      err = error;
     }
 
     var responseData = {
       rid: this.id,
-      error: error
+      error: err
     };
     if (data !== undefined) {
       responseData.data = data;

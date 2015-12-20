@@ -14,6 +14,10 @@ var scSimpleBroker = require('sc-simple-broker');
 var scErrors = require('sc-errors');
 var AuthTokenExpiredError = scErrors.AuthTokenExpiredError;
 var SilentMiddlewareBlockedError = scErrors.SilentMiddlewareBlockedError;
+var InvalidOptionsError = scErrors.InvalidOptionsError;
+var InvalidActionError = scErrors.InvalidActionError;
+var BrokerError = scErrors.BrokerError;
+var ServerProtocolError = scErrors.ServerProtocolError;
 
 
 var SCServer = function (options) {
@@ -50,8 +54,7 @@ var SCServer = function (options) {
   this._subscribeEvent = '#subscribe';
   this._publishEvent = '#publish';
 
-  // TODO: This needs to be a custom Error object with a name property
-  this.ERROR_NO_PUBLISH = 'Error: Client publish feature is disabled';
+  this.ERROR_NO_PUBLISH = new InvalidActionError('Client publish feature is disabled');
 
   this._middleware = {};
   this._middleware[this.MIDDLEWARE_HANDSHAKE] = [];
@@ -77,11 +80,9 @@ var SCServer = function (options) {
 
   if (opts.authPrivateKey != null || opts.authPublicKey != null) {
     if (opts.authPrivateKey == null) {
-      // TODO: This needs to be a custom Error object with a name property
-      throw new Error('The authPrivateKey option must be specified if authPublicKey is specified');
+      throw new InvalidOptionsError('The authPrivateKey option must be specified if authPublicKey is specified');
     } else if (opts.authPublicKey == null) {
-      // TODO: This needs to be a custom Error object with a name property
-      throw new Error('The authPublicKey option must be specified if authPrivateKey is specified');
+      throw new InvalidOptionsError('The authPublicKey option must be specified if authPrivateKey is specified');
     }
     this.signatureKey = opts.authPrivateKey;
     this.verificationKey = opts.authPublicKey;
@@ -150,10 +151,9 @@ SCServer.prototype._handleSocketError = function (error) {
 };
 
 SCServer.prototype._handleHandshakeTimeout = function (scSocket) {
-  // TODO: This needs to be a custom Error object with a name property
   // TODO: Is this a ServerProtocolError? Maybe it should be a SocketProtocolError with a status code?
   // Should we disconnect the socket?
-  var errorMessage = new Error('Did not receive #handshake from client before timeout');
+  var errorMessage = new ServerProtocolError('Did not receive #handshake from client before timeout');
   scSocket.emit('error', errorMessage);
 };
 
@@ -163,16 +163,13 @@ SCServer.prototype._processTokenError = function (socket, err, signedAuthToken) 
   var authError = null;
 
   if (err) {
-    err.signedAuthToken = signedAuthToken;
-    // TODO: Maybe this should be emitted as an 'error' event with a custom Error type instead?
-    socket.emit('badAuthToken', err);
-    this.emit('badSocketAuthToken', socket, err);
+    if (err.name == 'TokenExpiredError') {
+      authError = new AuthTokenExpiredError(err.message, err.expiredAt);
+    } else if (err.name == 'JsonWebTokenError') {
+      authError = new AuthTokenInvalidError(err.message);
+    }
 
-    // TODO: Maybe this should be a custom Error object with name property?
-    authError = {
-      name: err.name,
-      message: err.message
-    };
+    socket.emit('error', err);
   }
 
   return authError;
@@ -229,7 +226,6 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
   });
 
   scSocket.once('_disconnect', function () {
-    // TODO: Should we emit deauthenticate on disconnect?
     clearTimeout(scSocket._handshakeTimeout);
     scSocket.off('#handshake');
     scSocket.off('#authenticate');
@@ -265,14 +261,13 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
 
       self._brokerEngine.bind(scSocket, function (err, sock, isWarning) {
         if (err) {
-          // TODO: This should be an Error object with custom name
-          var errorMessage = 'Failed to bind socket to io cluster - ' + err;
+          var errorMessage = new BrokerError('Failed to bind socket to io cluster - ' + err);
           scSocket.emit('#fail', errorMessage);
           scSocket.disconnect();
           if (isWarning) {
             self.emit('warning', errorMessage);
           } else {
-            self.emit('error', new Error(errorMessage));
+            self.emit('error', errorMessage);
           }
           respond(err);
 
@@ -308,8 +303,7 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
 
         self._brokerEngine.unbind(scSocket, function (err) {
           if (err) {
-            // TODO: This needs to be a custom Error object with a name property
-            self.emit('error', new Error('Failed to unbind socket from io cluster - ' + err));
+            self.emit('error', new BrokerError('Failed to unbind socket from io cluster - ' + err));
           } else {
             self.emit('_disconnection', scSocket);
             self.emit('disconnection', scSocket);
@@ -388,8 +382,7 @@ SCServer.prototype.verifyHandshake = function (info, cb) {
       var callbackInvoked = false;
       async.applyEachSeries(handshakeMiddleware, req, function (err) {
         if (callbackInvoked) {
-          // TODO: Error object needs to be custom with a name property
-          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_HANDSHAKE + ' middleware was already invoked'));
+          self.emit('warning', new InvalidActionError('Callback for ' + self.MIDDLEWARE_HANDSHAKE + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {
@@ -408,8 +401,7 @@ SCServer.prototype.verifyHandshake = function (info, cb) {
       cb(true);
     }
   } else {
-    // TODO: Needs to be Error object with a name property
-    var err = 'Failed to authorize socket handshake - Invalid origin: ' + origin;
+    var err = new ServerProtocolError('Failed to authorize socket handshake - Invalid origin: ' + origin);
     this.emit('warning', err);
     cb(false, 403, err);
   }
@@ -428,8 +420,7 @@ SCServer.prototype.verifyInboundEvent = function (socket, event, data, cb) {
 
   var token = socket.getAuthToken();
   if (this._isAuthTokenExpired(token)) {
-    request.authTokenExpiredError = new AuthTokenExpiredError('The socket auth token has expired');
-    request.authTokenExpiredError.expiry = token.exp;
+    request.authTokenExpiredError = new AuthTokenExpiredError('The socket auth token has expired', token.exp);
 
     socket.deauthenticate();
   }
@@ -468,8 +459,7 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
       async.applyEachSeries(this._middleware[this.MIDDLEWARE_SUBSCRIBE], request,
         function (err) {
           if (callbackInvoked) {
-            // TODO: Error object needs to be custom with a name property
-            self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware was already invoked'));
+            self.emit('warning', new InvalidActionError('Callback for ' + self.MIDDLEWARE_SUBSCRIBE + ' middleware was already invoked'));
           } else {
             callbackInvoked = true;
             if (err) {
@@ -491,8 +481,7 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
         async.applyEachSeries(this._middleware[this.MIDDLEWARE_PUBLISH_IN], request,
           function (err) {
             if (callbackInvoked) {
-              // TODO: Needs to be a custom Error with a name property
-              self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware was already invoked'));
+              self.emit('warning', new InvalidActionError('Callback for ' + self.MIDDLEWARE_PUBLISH_IN + ' middleware was already invoked'));
             } else {
               callbackInvoked = true;
               if (err) {
@@ -524,8 +513,7 @@ SCServer.prototype._passThroughMiddleware = function (options, cb) {
     async.applyEachSeries(this._middleware[this.MIDDLEWARE_EMIT], request,
       function (err) {
         if (callbackInvoked) {
-          // TODO: Needs to be a custom Error with a name property
-          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_EMIT + ' middleware was already invoked'));
+          self.emit('warning', new InvalidActionError('Callback for ' + self.MIDDLEWARE_EMIT + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {
@@ -556,8 +544,7 @@ SCServer.prototype.verifyOutboundEvent = function (socket, event, data, cb) {
     async.applyEachSeries(this._middleware[this.MIDDLEWARE_PUBLISH_OUT], request,
       function (err) {
         if (callbackInvoked) {
-          // TODO: Needs to be a custom Error with a name property
-          self.emit('warning', new Error('Callback for ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware was already invoked'));
+          self.emit('warning', new InvalidActionError('Callback for ' + self.MIDDLEWARE_PUBLISH_OUT + ' middleware was already invoked'));
         } else {
           callbackInvoked = true;
           if (err) {

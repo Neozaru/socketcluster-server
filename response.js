@@ -29,18 +29,18 @@ Response.prototype.end = function (data) {
 
 Response.prototype.error = function (error, data) {
   if (this.id) {
-    // TODO: This needs to be a custom Error object with a name property, it needs to
-    // capture all properties on the Error object,
-    var err;
     if (error instanceof Error) {
-      err = {name: error.name, message: error.message, stack: error.stack};
-    } else {
-      err = error;
+      if (!error.hasOwnProperty('name')) {
+        error.name = error.name;
+      }
+      if (!error.hasOwnProperty('message')) {
+        error.message = error.message;
+      }
     }
 
     var responseData = {
       rid: this.id,
-      error: err
+      error: error
     };
     if (data !== undefined) {
       responseData.data = data;

@@ -4,6 +4,10 @@ var SCEmitter = require('sc-emitter').SCEmitter;
 var formatter = require('sc-formatter');
 var Response = require('./response').Response;
 
+var scErrors = require('sc-errors');
+var InvalidArgumentsError = scErrors.InvalidArgumentsError;
+var InvalidMessageError = scErrors.InvalidMessageError;
+
 
 var SCSocket = function (id, server, socket) {
   var self = this;
@@ -18,7 +22,6 @@ var SCSocket = function (id, server, socket) {
     '_disconnect': 1,
     'message': 1,
     'error': 1,
-    'badAuthToken': 1,
     'authenticate': 1,
     'deauthenticate': 1,
     'raw': 1
@@ -63,8 +66,7 @@ var SCSocket = function (id, server, socket) {
       var obj = self.parse(message);
 
       if (obj == null) {
-        // TODO: This needs to be a custom Error object with a name property
-        var err = new Error('Received empty message');
+        var err = new InvalidMessageError('Received empty message');
         SCEmitter.prototype.emit.call(self, 'error', err);
 
       } else if (obj.event) {
@@ -174,9 +176,7 @@ SCSocket.prototype._onSCClose = function (code, data) {
     SCEmitter.prototype.emit.call(this, 'disconnect', code, data);
 
     if (!SCSocket.ignoreStatuses[code]) {
-      // TODO: This needs to be a custom Error object with a name property
-      var err = new Error(SCSocket.errorStatuses[code] || 'Socket connection failed for unknown reasons');
-      err.code = code;
+      var err = new SocketProtocolError(SCSocket.errorStatuses[code] || 'Socket connection failed for unknown reasons', code);
       SCEmitter.prototype.emit.call(this, 'error', err);
     }
   }
@@ -223,7 +223,6 @@ SCSocket.prototype.sendObject = function (object) {
   try {
     str = this.stringify(object);
   } catch (err) {
-    // TODO: Make sure this is a custom Error object with a name property
     SCEmitter.prototype.emit.call(this, 'error', err);
   }
   if (str != null) {
@@ -249,8 +248,8 @@ SCSocket.prototype.emit = function (event, data, callback) {
       } else {
         if (callback) {
           var timeout = setTimeout(function () {
-            // TODO: This needs to be a custom Error object with a name property
-            var error = new Error("Event response for '" + event + "' timed out");
+            var error = new TimeoutError("Event response for '" + event + "' timed out");
+            // TODO: Remove type - Use TimeoutError error name instead
             error.type = 'timeout';
 
             delete self._callbackMap[eventObject.cid];
@@ -274,8 +273,7 @@ SCSocket.prototype.setAuthToken = function (data, options, callback) {
 
   if (options != null && options.algorithm != null) {
     delete options.algorithm;
-    // TODO: This needs to be a custom Error object with a name property
-    var err = new Error('Cannot change auth token algorithm at runtime - It must be specified as a config option on launch');
+    var err = new InvalidArgumentsError('Cannot change auth token algorithm at runtime - It must be specified as a config option on launch');
     SCEmitter.prototype.emit.call(this, 'error', err);
   }
   options = _.defaults({}, options, this.server.defaultSignatureOptions);

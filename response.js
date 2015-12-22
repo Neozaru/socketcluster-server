@@ -1,3 +1,6 @@
+var scErrors = require('sc-errors');
+var InvalidActionError = scErrors.InvalidActionError;
+
 var Response = function (socket, id) {
   this.socket = socket;
   this.id = id;
@@ -6,8 +9,7 @@ var Response = function (socket, id) {
 
 Response.prototype._respond = function (responseData) {
   if (this.sent) {
-    // TODO: This needs to be a custom Error object with a name property
-    throw new Error('Response ' + this.id + ' has already been sent');
+    throw new InvalidActionError('Response ' + this.id + ' has already been sent');
   } else {
     this.sent = true;
     this.socket.sendObject(responseData);
@@ -22,7 +24,6 @@ Response.prototype.end = function (data) {
     if (data !== undefined) {
       responseData.data = data;
     }
-
     this._respond(responseData);
   }
 };

@@ -13,6 +13,7 @@ var scSimpleBroker = require('sc-simple-broker');
 
 var scErrors = require('sc-errors');
 var AuthTokenExpiredError = scErrors.AuthTokenExpiredError;
+var AuthTokenInvalidError = scErrors.AuthTokenInvalidError;
 var SilentMiddlewareBlockedError = scErrors.SilentMiddlewareBlockedError;
 var InvalidOptionsError = scErrors.InvalidOptionsError;
 var InvalidActionError = scErrors.InvalidActionError;
@@ -151,10 +152,7 @@ SCServer.prototype._handleSocketError = function (error) {
 };
 
 SCServer.prototype._handleHandshakeTimeout = function (scSocket) {
-  // TODO: Is this a ServerProtocolError? Maybe it should be a SocketProtocolError with a status code?
-  // Should we disconnect the socket?
-  var errorMessage = new ServerProtocolError('Did not receive #handshake from client before timeout');
-  scSocket.emit('error', errorMessage);
+  scSocket.disconnect(4005);
 };
 
 SCServer.prototype._processTokenError = function (socket, err, signedAuthToken) {
@@ -261,13 +259,10 @@ SCServer.prototype._handleSocketConnection = function (wsSocket) {
 
       self._brokerEngine.bind(scSocket, function (err, sock, isWarning) {
         if (err) {
-          var errorMessage = new BrokerError('Failed to bind socket to io cluster - ' + err);
-          scSocket.emit('#fail', errorMessage);
-          scSocket.disconnect();
-          if (isWarning) {
-            self.emit('warning', errorMessage);
-          } else {
-            self.emit('error', errorMessage);
+          scSocket.disconnect(4006);
+          if (!isWarning) {
+            var error = new BrokerError('Failed to bind socket to broker cluster - ' + err);
+            self.emit('error', error);
           }
           respond(err);
 

@@ -7,6 +7,7 @@ var Response = require('./response').Response;
 var scErrors = require('sc-errors');
 var InvalidArgumentsError = scErrors.InvalidArgumentsError;
 var InvalidMessageError = scErrors.InvalidMessageError;
+var SocketProtocolError = scErrors.SocketProtocolError;
 
 
 var SCSocket = function (id, server, socket) {
@@ -114,27 +115,8 @@ SCSocket.CONNECTING = SCSocket.prototype.CONNECTING = 'connecting';
 SCSocket.OPEN = SCSocket.prototype.OPEN = 'open';
 SCSocket.CLOSED = SCSocket.prototype.CLOSED = 'closed';
 
-SCSocket.ignoreStatuses = {
-  1000: 'Socket closed normally',
-  1001: 'Socket hung up'
-};
-
-SCSocket.errorStatuses = {
-  1002: 'A WebSocket protocol error was encountered',
-  1003: 'Server terminated socket because it received invalid data',
-  1005: 'Socket closed without status code',
-  1006: 'Socket hung up',
-  1007: 'Message format was incorrect',
-  1008: 'Encountered a policy violation',
-  1009: 'Message was too big to process',
-  1010: 'Client ended the connection because the server did not comply with extension requirements',
-  1011: 'Server encountered an unexpected fatal condition',
-  4000: 'Server ping timed out',
-  4001: 'Client pong timed out',
-  4002: 'Server failed to sign auth token',
-  4003: 'Failed to complete handshake',
-  4004: 'Client failed to save auth token'
-};
+SCSocket.ignoreStatuses = scErrors.socketProtocolIgnoreStatuses;
+SCSocket.errorStatuses = scErrors.socketProtocolErrorStatuses;
 
 SCSocket.prototype._sendPing = function () {
   if (this.state != this.CLOSED) {
@@ -249,8 +231,6 @@ SCSocket.prototype.emit = function (event, data, callback) {
         if (callback) {
           var timeout = setTimeout(function () {
             var error = new TimeoutError("Event response for '" + event + "' timed out");
-            // TODO: Remove type - Use TimeoutError error name instead
-            error.type = 'timeout';
 
             delete self._callbackMap[eventObject.cid];
             callback(error, eventObject);
